@@ -240,14 +240,15 @@ extension AnisetteClient {
         let (lookupData, lookupResp) = try await sendRequest(lookupReq, step: "Lookup", endpointName: "Apple lookup")
         var activeRoutingInfo = extractRoutingInfo(from: lookupResp, data: lookupData) ?? customHeaders?.routingInfo
 
-        guard let plist = try PropertyListSerialization.propertyList(from: lookupData, options: [], format: nil) as? [String: Any],
+        guard let plist = (try? PropertyListSerialization.propertyList(from: lookupData, options: [], format: nil)) as? [String: Any],
               let urls = plist["urls"] as? [String: String],
               let startURLString = urls["midStartProvisioning"],
               let startURL = URL(string: startURLString),
               let endURLString = urls["midFinishProvisioning"],
               let endURL = URL(string: endURLString) else {
-            debugLog("[AnisetteKit] ERROR: Failed to parse provisioning URLs from lookup")
-            throw AnisetteError.invalidResponse(reason: "Failed to parse provisioning URLs from lookup")
+            let preview = responsePreview(from: lookupData)
+            debugLog("[AnisetteKit] ERROR: Failed to parse provisioning URLs from lookup. Response: \(preview)")
+            throw AnisetteError.invalidResponse(reason: "Failed to parse provisioning URLs from lookup (Apple lookup endpoint returned: \(preview))")
         }
         verboseLog("[AnisetteKit] Got start URL: \(startURLString)")
 
@@ -288,6 +289,23 @@ extension AnisetteClient {
         }
 
         return adiPb
+    }
+
+    /// Produces a short, safe-to-log preview of a raw HTTP response body so a plist/JSON
+    /// parse failure carries enough context to diagnose (e.g. an HTML error/CAPTCHA page,
+    /// an empty body, or a rate-limit notice) instead of only the generic Foundation
+    /// "data couldn't be read" message.
+    private func responsePreview(from data: Data, maxLength: Int = 300) -> String {
+        guard !data.isEmpty else { return "<empty response, 0 bytes>" }
+        if let text = String(data: data, encoding: .utf8) {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.count > maxLength {
+                return "\(trimmed.prefix(maxLength))… (\(data.count) bytes total)"
+            }
+            return trimmed.isEmpty ? "<empty response, \(data.count) bytes>" : trimmed
+        }
+        let hexPreview = data.prefix(maxLength / 2).map { String(format: "%02x", $0) }.joined()
+        return "<binary, \(data.count) bytes, hex: \(hexPreview)…>"
     }
 
     private func extractRoutingInfo(from response: URLResponse?, data: Data? = nil) -> String? {
@@ -357,12 +375,13 @@ extension AnisetteClient {
         let (data, resp) = try await sendRequest(req, step: "fetchSpim", endpointName: "Apple SPIM")
         let discoveredRinfo = extractRoutingInfo(from: resp, data: data)
 
-        guard let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+        guard let plist = (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil)) as? [String: Any],
               let response = plist["Response"] as? [String: Any],
               let spimString = response["spim"] as? String,
               let spimData = Data(base64Encoded: spimString) else {
-            debugLog("[AnisetteKit] fetchSpim ERROR: plist keys: \((try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any])?.keys.joined(separator: ", ") ?? "?")")
-            throw AnisetteError.invalidResponse(reason: "Failed to parse spim from Apple response")
+            let preview = responsePreview(from: data)
+            debugLog("[AnisetteKit] fetchSpim ERROR: could not parse spim from response: \(preview)")
+            throw AnisetteError.invalidResponse(reason: "Failed to parse spim from Apple response (Apple SPIM endpoint returned: \(preview))")
         }
         verboseLog("[AnisetteKit] fetchSpim got spim (\(spimData.count) bytes)")
         return (spimData, discoveredRinfo)
@@ -376,14 +395,15 @@ extension AnisetteClient {
         let (data, resp) = try await sendRequest(req, step: "fetchPtmTk", endpointName: "Apple PTM/TK")
         let discoveredRinfo = extractRoutingInfo(from: resp, data: data)
 
-        guard let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+        guard let plist = (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil)) as? [String: Any],
               let response = plist["Response"] as? [String: Any],
               let ptmString = response["ptm"] as? String,
               let tkString = response["tk"] as? String,
               let ptm = Data(base64Encoded: ptmString),
               let tk = Data(base64Encoded: tkString) else {
-            debugLog("[AnisetteKit] fetchPtmTk ERROR: plist keys: \((try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any])?.keys.joined(separator: ", ") ?? "?")")
-            throw AnisetteError.invalidResponse(reason: "Failed to parse ptm/tk from Apple response")
+            let preview = responsePreview(from: data)
+            debugLog("[AnisetteKit] fetchPtmTk ERROR: could not parse ptm/tk from response: \(preview)")
+            throw AnisetteError.invalidResponse(reason: "Failed to parse ptm/tk from Apple response (Apple PTM/TK endpoint returned: \(preview))")
         }
         verboseLog("[AnisetteKit] fetchPtmTk got ptm (\(ptm.count) bytes), tk (\(tk.count) bytes)")
         return (ptm, tk, discoveredRinfo)
